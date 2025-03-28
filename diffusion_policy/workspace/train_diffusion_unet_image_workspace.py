@@ -29,6 +29,12 @@ from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy.model.diffusion.ema_model import EMAModel
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
+################### custom start #################
+import csv
+import cv2
+from PIL import Image
+################### custom end ###################
+
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
@@ -38,7 +44,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         super().__init__(cfg, output_dir=output_dir)
 
         # set seed
-        seed = cfg.training.seed
+        seed = cfg.training.seed ## 42
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
@@ -47,7 +53,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         self.model: DiffusionUnetImagePolicy = hydra.utils.instantiate(cfg.policy)
 
         self.ema_model: DiffusionUnetImagePolicy = None
-        if cfg.training.use_ema:
+        if cfg.training.use_ema: ## True
             self.ema_model = copy.deepcopy(self.model)
 
         # configure training state
@@ -62,7 +68,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         cfg = copy.deepcopy(self.cfg)
 
         # resume training
-        if cfg.training.resume:
+        if cfg.training.resume: ## True
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
                 print(f"Resuming from checkpoint {lastest_ckpt_path}")
@@ -73,6 +79,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset)
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        
         normalizer = dataset.get_normalizer()
 
         # configure validation dataset
@@ -80,7 +87,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
 
         self.model.set_normalizer(normalizer)
-        if cfg.training.use_ema:
+        if cfg.training.use_ema: ## True
             self.ema_model.set_normalizer(normalizer)
 
         # configure lr scheduler
@@ -95,6 +102,18 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             # however huggingface diffusers steps it every batch
             last_epoch=self.global_step-1
         )
+
+        ################### custom start #################
+        # print(f"cfg.task.dataset: {cfg.task.dataset}")
+        # print(f"dir(dataset): {dir(dataset)}")
+        # print(f"dir(train_dataloader): {dir(train_dataloader)}")
+        # print(f"dataset.__dict__: {dataset.__dict__}")
+        # print(f"train_dataloader.__dict__: {train_dataloader.__dict__}")
+        # print(f"dir(val_dataloader): {dir(val_dataloader)}")
+        # print(f"val_dataloader.__dict__: {val_dataloader.__dict__}")
+        
+
+        ################### custom end ###################
 
         # configure ema
         ema: EMAModel = None
@@ -129,7 +148,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         )
 
         # device transfer
-        device = torch.device(cfg.training.device)
+        device = torch.device(cfg.training.device) ## cuda0
         self.model.to(device)
         if self.ema_model is not None:
             self.ema_model.to(device)
@@ -153,7 +172,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             for local_epoch_idx in range(cfg.training.num_epochs):
                 step_log = dict()
                 # ========= train for this epoch ==========
-                if cfg.training.freeze_encoder:
+                if cfg.training.freeze_encoder: ## False
                     self.model.obs_encoder.eval()
                     self.model.obs_encoder.requires_grad_(False)
 
@@ -165,6 +184,62 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
+                        '''
+                        ########################## custom #############################
+                        
+                        batch_cpu = dict_apply(batch, lambda x: x.cpu().numpy())
+                        print(f"batch.keys(): {batch.keys()}")
+                        print(f"batch['obs'].keys(): {batch['obs'].keys()}")
+                        for key in batch['obs'].keys():
+                            print(f"batch['obs']['{key}'].shape: {batch['obs'][key].shape}")
+                        print(f"batch['action'].shape: {batch['action'].shape}")
+
+
+                        obs_cam = batch_cpu['obs']['camera_1']
+                        eef_pose = batch_cpu['obs']['robot_eef_pose']
+                        actions = batch_cpu['action']
+                        save_dir = f"debug_batch_epoch{self.epoch}_iter{batch_idx}"
+                        os.makedirs(save_dir, exist_ok=True)
+                        # (3) camera_0를 이미지로 저장
+                        B = obs_cam.shape[0]
+                        T_obs = obs_cam.shape[1]
+                        for b in range(B):
+                            for t in range(T_obs):
+                                # (3,240,320) -> (240,320,3)
+                                img = obs_cam[b, t].transpose(1,2,0)
+                                # 혹시 값이 0~1 범위라면 255 배
+                                # 아래는 예시로 float 값이라 가정하고 (0~1)->(0~255)
+                                img_to_save = (img*255).astype('uint8')
+                                img_to_save = img_to_save[..., ::-1]
+                                img_path = os.path.join(save_dir, f"cam0_b{b}_t{t}.png")
+                                cv2.imwrite(img_path, img_to_save)
+                        
+                        # eef_pose CSV 저장
+                        eef_csv_path = os.path.join(save_dir, "eef_pose.csv")
+                        with open(eef_csv_path, "w", newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["batch_idx", "horizon_idx", "eef_pose_0", "eef_pose_1"])  # 헤더 예시
+                            T_eef = eef_pose.shape[1]  # 보통 2
+                            for b in range(B):
+                                for t in range(T_eef):
+                                    # eef_pose[b, t]는 (2,) 형태. 이를 리스트로 풀어서 저장
+                                    row = [b, t] + eef_pose[b, t].tolist()
+                                    writer.writerow(row)
+                        
+                        # action.shape = (B, 16, 2)
+                        act_csv_path = os.path.join(save_dir, "action.csv")
+                        with open(act_csv_path, "w", newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["batch_idx", "horizon_idx", "action_0", "action_1"])  # 헤더 예시
+                            T_act = actions.shape[1]  # 16
+                            for b in range(B):
+                                for t in range(T_act):
+                                    row = [b, t] + actions[b, t].tolist()
+                                    writer.writerow(row)
+                        
+
+                        ########################## custom #############################
+                        '''
 
                         # compute loss
                         raw_loss = self.model.compute_loss(batch)

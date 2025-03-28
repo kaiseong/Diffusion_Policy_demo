@@ -38,7 +38,7 @@ class RealEnv:
             frequency=10,
             n_obs_steps=2,
             # obs
-            obs_image_resolution=(640,480),
+            obs_image_resolution=(1280,720),
             max_obs_buffer_size=30,
             camera_serial_numbers=None,
             obs_key_map=DEFAULT_OBS_KEY_MAP,
@@ -247,6 +247,8 @@ class RealEnv:
         # get data
         # 30 Hz, camera_receive_timestamp
         k = math.ceil(self.n_obs_steps * (self.video_capture_fps / self.frequency))
+        # k = math.ceil(2 * (30 / 10)) is 6
+
         self.last_realsense_data = self.realsense.get(
             k=k, 
             out=self.last_realsense_data)
@@ -256,10 +258,12 @@ class RealEnv:
         # both have more than n_obs_steps data
 
         # align camera obs timestamps
+        # 현재 시점부터 n_obs_steps 만큼의 과거 데이터 사용
         dt = 1 / self.frequency
         last_timestamp = np.max([x['timestamp'][-1] for x in self.last_realsense_data.values()])
         obs_align_timestamps = last_timestamp - (np.arange(self.n_obs_steps)[::-1] * dt)
 
+        # 카메라 observation에서 obs_align_timestamps와 가장 근접한 index 선정, 더 빠른 시간이 없으면 0번째 index
         camera_obs = dict()
         for camera_idx, value in self.last_realsense_data.items():
             this_timestamps = value['timestamp']
@@ -274,6 +278,7 @@ class RealEnv:
             camera_obs[f'camera_{camera_idx}'] = value['color'][this_idxs]
 
         # align robot obs
+        # 로봇 observation에서 obs_align_timestamps와 가장 근접한 index 선정, 더 빠른 시간이 없으면 0번째 index
         robot_timestamps = last_robot_data['robot_receive_timestamp']
         this_timestamps = robot_timestamps
         this_idxs = list()

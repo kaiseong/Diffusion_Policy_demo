@@ -56,9 +56,9 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
             cond_predict_scale=cond_predict_scale
         )
 
-        self.obs_encoder = obs_encoder
-        self.model = model
-        self.noise_scheduler = noise_scheduler
+        self.obs_encoder = obs_encoder # MultiImageObsEncoder
+        self.model = model # ConditionalUnet1D
+        self.noise_scheduler = noise_scheduler # DDPMScheduler
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
             obs_dim=0 if obs_as_global_cond else obs_feature_dim,

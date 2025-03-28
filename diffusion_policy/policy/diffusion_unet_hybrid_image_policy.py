@@ -100,7 +100,11 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             )
 
         obs_encoder = policy.nets['policy'].nets['encoder'].nets['obs']
-        
+        # print(f"obs_encoder: {obs_encoder}")
+        # print(f"policy: {policy}")
+        # print(f"policy.nets['policy']: {policy.nets['policy']}")
+        # print(f"policy.nets['policy'].nets['encoder']: {policy.nets['policy'].nets['encoder']}")
+        # print(f"policy.nets['policy'].nets['encoder'].nets['obs']: {policy.nets['policy'].nets['encoder'].nets['obs']}")
         if obs_encoder_group_norm:
             # replace batch norm with group norm
             replace_submodules(

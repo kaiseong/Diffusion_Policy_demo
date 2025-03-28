@@ -29,7 +29,9 @@ from diffusion_policy.real_world.keystroke_counter import (
     KeystrokeCounter, Key, KeyCode
 )
 # nscl
-from pynput import keyboard
+import pygame
+import sys
+
 
 @click.command()
 @click.option('--output', '-o', required=True, help="Directory to save demonstration dataset.")
@@ -42,49 +44,25 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
     dt = 1/frequency
 
     # nscl
-    MOVE_STEP = 0.005
+    pygame.init()
+    pygame.joystick.init()
+
+    joystick_count = pygame.joystick.get_count()
+    if joystick_count == 0:
+        print("조이스틱 연결을 확인하세요", file=sys.stderr)
+        sys.exit()
+
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
+    print("joystick 동기화 완료")
     dx, dy = 0.0, 0.0
 
-    def on_press(key):
-        nonlocal MOVE_STEP
-        nonlocal dx, dy
-        if hasattr(key, 'char') and key.char:
-            if key.char == 'v':
-                MOVE_STEP = 0.001
-            elif key.char == 'b':
-                MOVE_STEP = 0.005
-            elif key.char == 'n':
-                MOVE_STEP = 0.02
-
-        if key == keyboard.Key.up:
-            dy = -MOVE_STEP
-        elif key == keyboard.Key.down:
-            dy = MOVE_STEP
-        elif key == keyboard.Key.left:
-            dx = MOVE_STEP
-        elif key == keyboard.Key.right:
-            dx = -MOVE_STEP
-    
-    def on_release(key):
-        nonlocal dx, dy
-        if key in [keyboard.Key.up, keyboard.Key.down]:
-            dy =0.0
-        if key in [keyboard.Key.left, keyboard.Key.right]:
-            dx =0.0
-    
-    listener = keyboard.Listener(on_press = on_press, on_release=on_release)
-    listener.start()
-
-    
-
-
     with SharedMemoryManager() as shm_manager:
-        with KeystrokeCounter() as key_counter, \
-            RealEnv(
-                output_dir=output, 
-                robot_ip=robot_ip, 
+        with RealEnv(
+                output_dir=output,
+                robot_ip=robot_ip,
                 # recording resolution
-                obs_image_resolution=(1280,720),
+                obs_image_resolution=(1280, 720),
                 frequency=frequency,
                 init_joints=init_joints,
                 enable_multi_cam_vis=True,
@@ -92,9 +70,9 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 # number of threads per camera view for video recording (H.264)
                 thread_per_video=3,
                 # video recording quality, lower is better (but slower).
-                video_crf=21,
-                shm_manager=shm_manager
-            ) as env:
+            video_crf=21,
+            shm_manager=shm_manager
+        ) as env:
             cv2.setNumThreads(1)
 
             # realsense exposure
@@ -104,10 +82,9 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
 
             time.sleep(1.0)
             print('Ready!')
-            base_pose = [-0.285, 0.283, 0.06, 1.610, -2.682, -0.022]
+            base_pose = [-0.2869, 0.2864, 0.06, 1.359, 2.829, 0.030]
             plan_time = time.time() + 2.0
             env.exec_actions([base_pose], [plan_time])
-
 
             # 간단히 "5초 이내"로 기다리면서 도달 여부 검사
             print("Moving to the base_pose, please wait...")
@@ -118,7 +95,8 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 # 현재 로봇 위치
                 state = env.get_robot_state()
                 actual_pose = state['ActualTCPPose']  # length=6
-                dist = np.linalg.norm(np.array(actual_pose[:3]) - np.array(base_pose[:3]))
+                dist = np.linalg.norm(
+                    np.array(actual_pose[:3]) - np.array(base_pose[:3]))
                 if dist < 0.01:
                     # 어느정도 도달했다고 가정
                     break
@@ -132,6 +110,7 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
             iter_idx = 0
             stop = False
             is_recording = False
+            stage = 0
             while not stop:
                 # calculate timing
                 t_cycle_end = t_start + (iter_idx + 1) * dt
@@ -142,34 +121,46 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 obs = env.get_obs()
 
                 # handle key presses
-                press_events = key_counter.get_press_events()
-                for key_stroke in press_events:
-                    if key_stroke == KeyCode(char='q'):
-                        # Exit program
-                        stop = True
-                    elif key_stroke == KeyCode(char='c'):
-                        # Start recording
-                        env.start_episode(t_start + (iter_idx + 2) * dt - time.monotonic() + time.time())
-                        key_counter.clear()
-                        is_recording = True
-                        print('Recording!')
-                    elif key_stroke == KeyCode(char='s'):
-                        # Stop recording
-                        env.end_episode()
-                        key_counter.clear()
-                        is_recording = False
-                        print('Stopped.')
-                    elif key_stroke == Key.backspace:
-                        # Delete the most recent recorded episode
-                        if click.confirm('Are you sure to drop an episode?'):
-                            env.drop_episode()
-                            key_counter.clear()
+                for event in pygame.event.get():
+                    if event.type == pygame.JOYBUTTONDOWN:
+                        if event.button == 3:
+                            stop = True
+                        elif event.button == 0:
+                            env.start_episode(
+                                t_start + (iter_idx+2)*dt-time.monotonic()+time.time())
+                            is_recording = True
+                            stage = 0
+                            print("Recoding!")
+                        elif event.button == 2:
+                            env.end_episode()
                             is_recording = False
-                        # delete
-                stage = key_counter[Key.space]
-
+                            stage = 0
+                            print("Stopped.")
+                        elif event.button == 1:
+                            if click.confirm("Are you sure to drop an episode?"):
+                                env.drop_episode()
+                                is_recording = False
+                                stage = 0
+                        if event.button == 4:
+                            stage += 1
+                        elif event.button == 5:
+                            target_pose=base_pose
+                    if event.type == pygame.JOYAXISMOTION:
+                        axis = event.axis
+                        value = event.value
+                        if abs(value) < 0.03:
+                            value = 0.0
+                        if axis == 0:
+                            dy = -value*0.008
+                        elif axis == 1:
+                            dx = -value*0.008
+                        elif axis == 3:
+                            dx = -value*0.004
+                        elif axis == 2:
+                            dy = -value*0.004
+                    
                 # visualize
-                vis_img = obs[f'camera_{vis_camera_idx}'][-1,:,:,::-1].copy()
+                vis_img = obs[f'camera_{vis_camera_idx}'][-1,:, :, ::-1].copy()
                 episode_id = env.replay_buffer.n_episodes
                 text = f'Episode: {episode_id}, Stage: {stage}'
                 if is_recording:
@@ -177,11 +168,11 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 cv2.putText(
                     vis_img,
                     text,
-                    (10,30),
+                    (10, 30),
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                     fontScale=1,
                     thickness=2,
-                    color=(255,255,255)
+                    color=(255, 255, 255)
                 )
 
                 cv2.imshow('default', vis_img)
@@ -189,10 +180,9 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
 
                 precise_wait(t_sample)
                 # get teleop command
-                
-                dpos = np.array([dx, dy, 0.0], dtype = float)
-                drot_xyz = np.array([0.0, 0.0, 0.0], dtype= float)
-                
+
+                dpos = np.array([dx, dy, 0.0], dtype=float)
+                drot_xyz = np.array([0.0, 0.0, 0.0], dtype=float)
 
                 drot = st.Rotation.from_euler('xyz', drot_xyz)
                 target_pose[:3] += dpos
@@ -200,12 +190,16 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                     target_pose[3:])).as_rotvec()
 
                 # execute teleop command
+                # print(f"dx: {dx}, dy:{dy}")
+                # print(target_pose)
                 env.exec_actions(
-                    actions=[target_pose], 
+                    actions=[target_pose],
                     timestamps=[t_command_target-time.monotonic()+time.time()],
                     stages=[stage])
+                
                 precise_wait(t_cycle_end)
                 iter_idx += 1
+
 
 # %%
 if __name__ == '__main__':
