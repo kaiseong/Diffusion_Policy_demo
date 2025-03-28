@@ -1,0 +1,15 @@
+
+build-ubuntu-1804:
+  extends: .linux-build
+  image: registry.gitlab.sdu.dk/sdurobotics/docker-images/ur_rtde-build:ubuntu-1804
+
+examples-ubuntu-1804:
+  extends: .linux-build-examples
+  image: registry.gitlab.sdu.dk/sdurobotics/docker-images/ur_rtde-build:ubuntu-1804
+  dependencies:
+    - build-ubuntu-1804
+  needs: ["build-ubuntu-1804"]
+
+build_docs:
+  extends: .linux-doc
+  image: registry.gitlab.sdu.dk/sdurobotics/docker-images/ur_rtde-build:ubuntu-1804-doc
