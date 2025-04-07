@@ -34,7 +34,7 @@ import skvideo.io
 from omegaconf import OmegaConf
 import scipy.spatial.transform as st
 from diffusion_policy.real_world.real_env import RealEnv
-from diffusion_policy.real_world.spacemouse_shared_memory import Spacemouse
+from diffusion_policy.real_world.joypad_shared_memory import JoypadSpacemouse
 from diffusion_policy.common.precise_sleep import precise_wait
 from diffusion_policy.real_world.real_inference_util import (
     get_real_obs_resolution, 
@@ -44,6 +44,8 @@ from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.common.cv2_util import get_image_transform
 
+import csv
+import os
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
@@ -101,7 +103,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
         policy.eval().to(device)
 
         # set inference params
-        policy.num_inference_steps = 16 # DDIM inference iterations
+        policy.num_inference_steps = 8 # DDIM inference iterations
         policy.n_action_steps = policy.horizon - policy.n_obs_steps + 1
 
     elif 'robomimic' in cfg.name:
@@ -136,12 +138,13 @@ def main(input, output, robot_ip, match_dataset, match_episode,
 
     obs_res = get_real_obs_resolution(cfg.task.shape_meta)
     n_obs_steps = cfg.n_obs_steps
+    print("policy num_inference_steps: ", policy.num_inference_steps)
     print("n_obs_steps: ", n_obs_steps)
     print("steps_per_inference:", steps_per_inference)
     print("action_offset:", action_offset)
 
     with SharedMemoryManager() as shm_manager:
-        with Spacemouse(shm_manager=shm_manager) as sm, RealEnv(
+        with JoypadSpacemouse(shm_manager=shm_manager) as sm, RealEnv(
             output_dir=output, 
             robot_ip=robot_ip, 
             frequency=frequency,
@@ -185,7 +188,8 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                 # ========= human control loop ==========
                 print("Human in control!")
                 state = env.get_robot_state()
-                target_pose = state['TargetTCPPose']
+                # target_pose = state['TargetTCPPose']
+                target_pose = [-0.2869, 0.2864, 0.05, 1.359, 2.829, 0.030]
                 t_start = time.monotonic()
                 iter_idx = 0
                 while True:
@@ -256,7 +260,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     target_pose[3:] = (drot * st.Rotation.from_rotvec(
                         target_pose[3:])).as_rotvec()
                     # clip target pose
-                    target_pose[:2] = np.clip(target_pose[:2], [0.25, -0.45], [0.77, 0.40])
+                    target_pose[:2] = np.clip(target_pose[:2], [-0.80290, -0.340], [-0.256, 0.49842])
 
                     # execute teleop command
                     env.exec_actions(
@@ -281,6 +285,33 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     iter_idx = 0
                     term_area_start_timestamp = float('inf')
                     perv_target_pose = None
+
+                    ################### custom start ############################
+                    
+                    images_dir = os.path.join(output, "debug_user_images")
+                    os.makedirs(images_dir, exist_ok=True)
+
+                    csv_file_ori_action = open(f'{output}/debug_ori_action_{time.strftime("%Y%m%d_%H%M%S")}.csv', 'w', newline='')
+                    csv_file_ori_eef_pose = open(f'{output}/debug_ori_eef_pose_{time.strftime("%Y%m%d_%H%M%S")}.csv', 'w', newline='')
+                    csv_file_dt = open(f'{output}/debug_dt_{time.strftime("%Y%m%d_%H%M%S")}.csv', 'w', newline='')
+                    csv_file_use_action = open(f'{output}/debug_use_action_{time.strftime("%Y%m%d_%H%M%S")}.csv', 'w', newline='')
+                    csv_file_use_eef_pose = open(f'{output}/debug_use_eef_pose_{time.strftime("%Y%m%d_%H%M%S")}.csv', 'w', newline='')
+                    
+                    csv_ori_action_writer = csv.writer(csv_file_ori_action)
+                    csv_ori_eef_pose_writer = csv.writer(csv_file_ori_eef_pose)
+                    csv_dt_writer = csv.writer(csv_file_dt)
+                    csv_use_action_writer = csv.writer(csv_file_use_action)
+                    csv_use_eef_pose_writer = csv.writer(csv_file_use_eef_pose)
+
+                    # # 헤더 작성 (idx와 action의 각 차원에 대한 열)
+                    csv_ori_action_writer.writerow(['episode', 'idx', 'time', 'x', 'y', 'z', 'roll', 'pitch', 'yaw'])
+                    csv_ori_eef_pose_writer.writerow(['episode', 'idx', 'time', 'x', 'y'])
+                    csv_dt_writer.writerow(['episode', 'obs_time', 'predict_time', 'dt'])
+                    csv_use_action_writer.writerow(['episode', 'idx', 'time', 'x', 'y'])
+                    csv_use_eef_pose_writer.writerow(['episode', 'idx', 'time', 'x', 'y'])
+                    
+                    ################### custom start ############################
+
                     while True:
                         # calculate timing
                         t_cycle_end = t_start + (iter_idx + steps_per_inference) * dt
@@ -290,6 +321,39 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         obs = env.get_obs()
                         obs_timestamps = obs['timestamp']
                         print(f'Obs latency {time.time() - obs_timestamps[-1]}')
+
+
+                        ################### custom start ############################
+                        for frame_idx in range(obs['camera_1'].shape[0]):
+                            # obs['camera_1'][frame_idx]는 shape (240, 320, 3)의 한 장의 이미지(float32)라고 가정
+                            # 1) 복사본을 만들고
+                            rgb_frame = obs['camera_1'][frame_idx].copy()
+                        
+                            # 2) 스케일링 (0~1 범위를 0~255 범위로)
+                            if rgb_frame.dtype == np.float32:
+                                rgb_frame = np.clip(rgb_frame * 255.0, 0, 255).astype(np.uint8)
+                        
+                            # 3) OpenCV는 BGR을 선호하므로 뒤집기
+                            bgr_frame = rgb_frame[..., ::-1]
+                        
+                            # 4) 파일명 생성 후 저장
+                            image_filename = os.path.join(
+                                images_dir, 
+                                f"episode_{episode_id}_iter_{iter_idx}_camera1_frame_{frame_idx}.png"
+                            )
+                            cv2.imwrite(image_filename, bgr_frame)
+
+                        for i in range(len(obs_timestamps)):
+                                csv_ori_eef_pose_writer.writerow([
+                                episode_id,
+                                i,
+                                obs_timestamps[i],
+                                obs['robot_eef_pose'][i, 0],
+                                obs['robot_eef_pose'][i, 1]
+                            ])
+                        
+                        
+                        ################### custom end ############################
 
                         # run inference
                         with torch.no_grad():
@@ -302,6 +366,17 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                             # this action starts from the first obs step
                             action = result['action'][0].detach().to('cpu').numpy()
                             print('Inference latency:', time.time() - s)
+
+                            ################### custom start ############################
+                            for i in range(len(obs_timestamps)):
+                                csv_use_eef_pose_writer.writerow([
+                                episode_id,
+                                i,
+                                obs_timestamps[i],
+                                obs_dict['robot_eef_pose'][0][i, 0].item(),
+                                obs_dict['robot_eef_pose'][0][i, 1].item()
+                            ])
+                            ################### custom end ############################
                         
                         # convert policy action to env actions
                         if delta_action:
@@ -321,6 +396,23 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         # the same step actions are always the target for
                         action_timestamps = (np.arange(len(action), dtype=np.float64) + action_offset
                             ) * dt + obs_timestamps[-1]
+                        
+                        ################### custom start ############################
+                        for i in range(len(this_target_poses)):
+                            x = this_target_poses[i, 0]
+                            y = this_target_poses[i, 1]
+                            z = this_target_poses[i, 2]
+                            roll = this_target_poses[i, 3]
+                            pitch = this_target_poses[i, 4]
+                            yaw = this_target_poses[i, 5]
+                            csv_ori_action_writer.writerow([
+                                episode_id,
+                                i,                # 현재 정책 호출/스텝 인덱스
+                                action_timestamps[i],
+                                x, y, z, roll, pitch, yaw
+                            ])
+                        ################### custom end ############################
+
                         action_exec_latency = 0.01
                         curr_time = time.time()
                         is_new = action_timestamps > (curr_time + action_exec_latency)
@@ -338,7 +430,23 @@ def main(input, output, robot_ip, match_dataset, match_episode,
 
                         # clip actions
                         this_target_poses[:,:2] = np.clip(
-                            this_target_poses[:,:2], [0.25, -0.45], [0.77, 0.40])
+                            this_target_poses[:,:2], [-0.80290, -0.340], [-0.256, 0.49842])
+                        
+                        ################### custom start ############################
+                        for i in range(len(this_target_poses)):
+                            x = this_target_poses[i, 0]
+                            y = this_target_poses[i, 1]
+                            z = this_target_poses[i, 2]
+                            roll = this_target_poses[i, 3]
+                            pitch = this_target_poses[i, 4]
+                            yaw = this_target_poses[i, 5]
+                            csv_use_action_writer.writerow([
+                                episode_id,
+                                i,                # 현재 정책 호출/스텝 인덱스
+                                action_timestamps[i],
+                                x, y, z, roll, pitch, yaw
+                            ])
+                        ################### custom end ############################
 
                         # execute actions
                         env.exec_actions(
@@ -403,6 +511,12 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         # wait for execution
                         precise_wait(t_cycle_end - frame_latency)
                         iter_idx += steps_per_inference
+                    
+                    csv_file_ori_action.close()
+                    csv_file_ori_eef_pose.close()
+                    csv_file_dt.close()
+                    csv_file_use_action.close()
+                    csv_file_use_eef_pose.close()
 
                 except KeyboardInterrupt:
                     print("Interrupted!")

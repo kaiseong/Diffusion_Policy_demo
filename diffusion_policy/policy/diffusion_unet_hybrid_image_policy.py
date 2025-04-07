@@ -89,7 +89,8 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
 
         # init global state
         ObsUtils.initialize_obs_utils_with_config(config)
-
+        
+        
         # load model
         policy: PolicyAlgo = algo_factory(
                 algo_name=config.algo_name,
@@ -100,7 +101,7 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
             )
 
         obs_encoder = policy.nets['policy'].nets['encoder'].nets['obs']
-        
+
         if obs_encoder_group_norm:
             # replace batch norm with group norm
             replace_submodules(

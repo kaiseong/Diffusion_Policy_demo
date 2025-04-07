@@ -1,14 +1,14 @@
 name: real_image
 
 image_shape: [3, 240, 320]
-dataset_path: data/pusht_real/real_pusht_20230105
+dataset_path: data/real_pusht_20230105
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
   obs:
-    # camera_0:
-    #   shape: ${task.image_shape}
-    #   type: rgb
+    camera_0:
+      shape: ${task.image_shape}
+      type: rgb
     camera_1:
       shape: ${task.image_shape}
       type: rgb

@@ -29,6 +29,12 @@ from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy.model.diffusion.ema_model import EMAModel
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
+################### custom start #################
+import csv
+import cv2
+from PIL import Image
+################### custom end ###################
+
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
@@ -165,6 +171,61 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
+
+                        ########################## custom #############################
+                        
+                        batch_cpu = dict_apply(batch, lambda x: x.cpu().numpy())
+                        # print(f"batch.keys(): {batch.keys()}")
+                        # print(f"batch['obs'].keys(): {batch['obs'].keys()}")
+                        # for key in batch['obs'].keys():
+                        #     print(f"batch['obs']['{key}'].shape: {batch['obs'][key].shape}")
+                        # print(f"batch['action'].shape: {batch['action'].shape}")
+
+
+                        obs_cam = batch_cpu['obs']['camera_0']
+                        eef_pose = batch_cpu['obs']['robot_eef_pose']
+                        actions = batch_cpu['action']
+                        save_dir = f"crop_test_batch_epoch{self.epoch}_iter{batch_idx}_0404a"
+                        os.makedirs(save_dir, exist_ok=True)
+                        # (3) camera_0를 이미지로 저장
+                        B = obs_cam.shape[0]
+                        T_obs = obs_cam.shape[1]
+                        for b in range(B):
+                            for t in range(T_obs):
+                                # (3,240,320) -> (240,320,3)
+                                img = obs_cam[b, t].transpose(1,2,0)
+                                # 혹시 값이 0~1 범위라면 255 배
+                                # 아래는 예시로 float 값이라 가정하고 (0~1)->(0~255)
+                                img_to_save = (img*255).astype('uint8')
+                                img_to_save = img_to_save[..., ::-1]
+                                img_path = os.path.join(save_dir, f"cam0_b{b}_t{t}.png")
+                                cv2.imwrite(img_path, img_to_save)
+                        
+                        # eef_pose CSV 저장
+                        eef_csv_path = os.path.join(save_dir, "eef_pose.csv")
+                        with open(eef_csv_path, "w", newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["batch_idx", "horizon_idx", "eef_pose_0", "eef_pose_1"])  # 헤더 예시
+                            T_eef = eef_pose.shape[1]  # 보통 2
+                            for b in range(B):
+                                for t in range(T_eef):
+                                    # eef_pose[b, t]는 (2,) 형태. 이를 리스트로 풀어서 저장
+                                    row = [b, t] + eef_pose[b, t].tolist()
+                                    writer.writerow(row)
+                        
+                        # action.shape = (B, 16, 2)
+                        act_csv_path = os.path.join(save_dir, "action.csv")
+                        with open(act_csv_path, "w", newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["batch_idx", "horizon_idx", "action_0", "action_1"])  # 헤더 예시
+                            T_act = actions.shape[1]  # 16
+                            for b in range(B):
+                                for t in range(T_act):
+                                    row = [b, t] + actions[b, t].tolist()
+                                    writer.writerow(row)
+                        
+
+                        ########################## custom #############################
 
                         # compute loss
                         raw_loss = self.model.compute_loss(batch)

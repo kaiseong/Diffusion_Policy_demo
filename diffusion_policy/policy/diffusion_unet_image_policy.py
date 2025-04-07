@@ -30,7 +30,6 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
             # parameters passed to step
             **kwargs):
         super().__init__()
-
         # parse shapes
         action_shape = shape_meta['action']['shape']
         assert len(action_shape) == 1

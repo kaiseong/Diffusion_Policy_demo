@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 import scipy.spatial.transform as st
 from diffusion_policy.real_world.real_env import RealEnv
-from diffusion_policy.real_world.spacemouse_shared_memory import Spacemouse
+from diffusion_policy.real_world.joypad_shared_memory import JoypadSpacemouse
 from diffusion_policy.common.precise_sleep import precise_wait
 from diffusion_policy.real_world.keystroke_counter import (
     KeystrokeCounter, Key, KeyCode
@@ -40,7 +40,7 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
     dt = 1/frequency
     with SharedMemoryManager() as shm_manager:
         with KeystrokeCounter() as key_counter, \
-            Spacemouse(shm_manager=shm_manager) as sm, \
+            JoypadSpacemouse(shm_manager=shm_manager) as sm, \
             RealEnv(
                 output_dir=output, 
                 robot_ip=robot_ip, 
@@ -62,6 +62,26 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
             env.realsense.set_exposure(exposure=120, gain=0)
             # realsense white balance
             env.realsense.set_white_balance(white_balance=5900)
+
+            # 간단히 "5초 이내"로 기다리면서 도달 여부 검사
+            base_pose = [-0.2869, 0.2864, 0.05, 1.359, 2.829, 0.030]
+            plan_time = time.time() + 2.0
+            env.exec_actions([base_pose], [plan_time])
+            print("Moving to the base_pose, please wait...")
+            start_block = time.time()
+            while True:
+                if time.time() - start_block > 5.0:
+                    break  # 최대 5초만 기다림
+                # 현재 로봇 위치
+                state = env.get_robot_state()
+                actual_pose = state['ActualTCPPose']  # length=6
+                dist = np.linalg.norm(
+                    np.array(actual_pose[:3]) - np.array(base_pose[:3]))
+                if dist < 0.01:
+                    # 어느정도 도달했다고 가정
+                    break
+                time.sleep(0.05)
+            print("Base pose reached (or timed out).")
 
             time.sleep(1.0)
             print('Ready!')
@@ -133,14 +153,14 @@ def main(output, robot_ip, vis_camera_idx, init_joints, frequency, command_laten
                 dpos = sm_state[:3] * (env.max_pos_speed / frequency)
                 drot_xyz = sm_state[3:] * (env.max_rot_speed / frequency)
                 
-                if not sm.is_button_pressed(0):
+                if not sm.is_button_pressed(7):
                     # translation mode
                     drot_xyz[:] = 0
                 else:
                     dpos[:] = 0
-                if not sm.is_button_pressed(1):
+                if not sm.is_button_pressed(6):
                     # 2D translation mode
-                    dpos[2] = 0    
+                    dpos[2] = 0
 
                 drot = st.Rotation.from_euler('xyz', drot_xyz)
                 target_pose[:3] += dpos
