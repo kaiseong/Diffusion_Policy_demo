@@ -23,6 +23,7 @@ DEFAULT_OBS_KEY_MAP = {
     'ArmEndPoseMsgs': 'robot_eef_pose',
     'ArmJointMsgs': 'robot_joint',
     'ArmGripperMsgs': 'robot_gripper',
+    'TargetEndPose': 'robot_eef_target',
     # timestamps
     'step_idx': 'step_idx',
     'timestamp': 'timestamp'

@@ -96,11 +96,13 @@ class PiperInterpolationController(mp.Process):
                 'ArmEndPoseMsgs',
                 'ArmJointMsgs',
                 'ArmGripperMsgs',
+                'TargetEndPose',
             ]
         shape_map = {
             'ArmEndPoseMsgs': (6,),   # X Y Z RX RY RZ
             'ArmJointMsgs':   (6,),   # j1~j6
             'ArmGripperMsgs': (3,),   # angle effort status
+            'TargetEndPose': (6,)
         }
         example = {k: np.zeros(shape_map[k], dtype=np.float64) for k in receive_keys}
         example['robot_receive_timestamp'] = time.time()
@@ -153,10 +155,10 @@ class PiperInterpolationController(mp.Process):
         return v
 
     def _vec_to_sdk_pose(self, vec):
-        pose = vec.copy()
-        pose[:3] = (pose[:3]*1e6).astype(int)
-        pose[3:] = (np.rad2deg(pose[3:])*1e3).astype(int)
-        return pose.tolist()
+        pose_int = np.empty(6, dtype=int)
+        pose_int[:3] = np.round(vec[:3] * 1e6).astype(int)
+        pose_int[3:] = np.round(np.rad2deg(vec[3:]) * 1e3).astype(int)
+        return pose_int.tolist()
 
     # =========== context method ============
     def __enter__(self):
@@ -189,7 +191,7 @@ class PiperInterpolationController(mp.Process):
             'cmd': Command.SCHEDULE_WAYPOINT.value,
             'target_pose': pose,
             'target_time': float(target_time)
-        }
+        }   
         self.input_queue.put(message)
 
     # =========== receive APIs ============
@@ -212,14 +214,34 @@ class PiperInterpolationController(mp.Process):
         piper = C_PiperInterface_V2("can0")
         piper.ConnectPort()
         piper.EnableArm(7)
-        time.sleep(2)
-        enable_run = piper.GetArmLowSpdInfoMsgs().motor_1.foc_status.driver_enable_status and \
-                    piper.GetArmLowSpdInfoMsgs().motor_2.foc_status.driver_enable_status and \
-                    piper.GetArmLowSpdInfoMsgs().motor_3.foc_status.driver_enable_status and \
-                    piper.GetArmLowSpdInfoMsgs().motor_4.foc_status.driver_enable_status and \
-                    piper.GetArmLowSpdInfoMsgs().motor_5.foc_status.driver_enable_status and \
-                    piper.GetArmLowSpdInfoMsgs().motor_6.foc_status.driver_enable_status
-        assert enable_run
+
+        enable_flag = False
+        timeout = 5
+        start_time = time.time()
+        elapsed_time_flag = False
+        while not (enable_flag):
+            elapsed_time = time.time() - start_time
+            print("--------------------")
+            enable_flag = piper.GetArmLowSpdInfoMsgs().motor_1.foc_status.driver_enable_status and \
+                piper.GetArmLowSpdInfoMsgs().motor_2.foc_status.driver_enable_status and \
+                piper.GetArmLowSpdInfoMsgs().motor_3.foc_status.driver_enable_status and \
+                piper.GetArmLowSpdInfoMsgs().motor_4.foc_status.driver_enable_status and \
+                piper.GetArmLowSpdInfoMsgs().motor_5.foc_status.driver_enable_status and \
+                piper.GetArmLowSpdInfoMsgs().motor_6.foc_status.driver_enable_status
+            print("상태 활성화:",enable_flag)
+            piper.EnableArm(7)
+            piper.GripperCtrl(0,5000,0x01, 0)
+            print("--------------------")
+            if elapsed_time > timeout:
+                print("시간초과....")
+                elapsed_time_flag = True
+                enable_flag = True
+                break
+            time.sleep(1)
+            pass
+        if(elapsed_time_flag):
+            print("프로그램 timeout으로 종료합니다")
+            exit(0)
 
         try:
             if self.verbose:
@@ -227,7 +249,7 @@ class PiperInterpolationController(mp.Process):
 
             #set parameters
             if self.payload_mass is not None:
-                if self.payload_mass >= 0.75:
+                if self.payload_mass <= 0.75:
                     piper.ArmParamEnquiryAndConfig(0x00, 0x00, 0x00, 0x00, 0x01)
                 elif self.payload_mass >= 1.35:
                     piper.ArmParamEnquiryAndConfig(0x00, 0x00, 0x00, 0x00, 0x02)
@@ -260,19 +282,26 @@ class PiperInterpolationController(mp.Process):
                 # diff = t_now - pose_interp.times[-1]
                 # if diff > 0:
                 #     print('extrapolate', diff)
-                pose_command = pose_interp(t_now)
+                pose_command = pose_interp(t_now) 
+                target_pose_vec = pose_command.copy()
                 vel = max(1, int(self.max_rot_speed / 1.57 * 100))
                 piper.MotionCtrl_2(0x01, 0x02, vel, 0x00)
                 piper.EndPoseCtrl(self._vec_to_sdk_pose(pose_command))
+                print(f"command: {self._vec_to_sdk_pose(pose_command)}")
                 
                 # update robot state
-                state = {
-                    k: (self._sdk_pose_to_vec(getattr(piper, 'Get'+k)())
-                        if k == "ArmEndPoseMsgs" 
-                        else np.asarray(getattr(piper, 'Get'+k)()))
-                    for k in self.receive_keys
-                }
+                state = dict()
+                for k in self.receive_keys:
+                    if k == 'TargetEndPose':
+                        continue
+                    raw = getattr(piper, 'Get'+k)()
+                    if k == 'ArmEndPoseMsgs':
+                        state[k] = self._sdk_pose_to_vec(raw)
+                    else:
+                        state[k] = np.asarray(raw)
+                
                 state["ArmJointMsgs"] = np.deg2rad(state["ArmJointMsgs"])
+                state["TargetEndPose"] = target_pose_vec
                 state["robot_receive_timestamp"] = time.time()
                 self.ring_buffer.put(state)
 
